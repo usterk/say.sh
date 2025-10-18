@@ -1,0 +1,18 @@
+# Virtual environments
+.venv/
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Local environment files
+.env
+.env.*
+
+# Audio outputs and temporary artifacts
+*.mp3
+*.wav
+
+# Test/coverage artifacts
+.coverage
+.pytest_cache/

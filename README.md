@@ -13,6 +13,18 @@
   pip install -r requirements.txt
   ```
 
+## Quick Start
+1. Create the virtual environment and install dependencies (see **Setup** above).
+2. Copy the sample environment file and edit it with your OpenAI key:
+   ```bash
+   cp env.example .env
+   # open .env and set OPENAI_API_KEY (optionally adjust CACHE_DIR or DEFAULT_VOICE)
+   ```
+3. Run the wrapper to ensure the script uses the project venv:
+   ```bash
+   ./say.sh --text "Hello" --play
+   ```
+
 ## Environment
 - Copy `env.example` to `.env` and edit the values:
   - `OPENAI_API_KEY` – required OpenAI key.
