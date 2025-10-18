@@ -296,6 +296,13 @@ def test_parse_args_skip_cache():
     assert args.skip_cache is True
 
 
+def test_parse_args_no_normalize_long_and_short():
+    long = say.parse_args(["--text", "hello", "--no-normalize"])
+    assert long.no_normalize is True
+    short = say.parse_args(["--text", "hello", "-n"])
+    assert short.no_normalize is True
+
+
 class _MainDummyResponses:
     def __init__(self):
         self.calls = 0
@@ -395,6 +402,38 @@ def test_main_cache_then_play(dummy_openai, monkeypatch, tmp_path, capsys):
     assert playback_calls and playback_calls[0]
     cache_root = cache_dir / say.compute_cache_key("Cache Example", say.load_prompt())
     assert (cache_root / say.INPUT_FILENAME).exists()
+
+
+def test_main_no_normalize_skips_model(dummy_openai, monkeypatch, tmp_path):
+    _setup_env(monkeypatch, tmp_path)
+
+    def should_not_run(*_args, **_kwargs):
+        raise AssertionError("Normalization should be skipped")
+
+    monkeypatch.setattr(say, "request_normalization", should_not_run)
+
+    exit_code = say.main(["--text", "Bypass", "--no-normalize", "--skip-cache", "--no-output"])
+
+    assert exit_code == 0
+
+
+def test_main_no_normalize_caches_audio(dummy_openai, monkeypatch, tmp_path, capsys):
+    cache_dir = _setup_env(monkeypatch, tmp_path)
+    merged = tmp_path / "merged.mp3"
+
+    exit_first = say.main(["--text", "Cache Example", "--no-normalize", "-o", str(merged)])
+    assert exit_first == 0
+    assert merged.exists()
+    capsys.readouterr()
+
+    exit_second = say.main(["--text", "Cache Example", "--no-normalize", "-v", "--no-output"])
+    assert exit_second == 0
+    output = capsys.readouterr().out
+    assert "audio cache hits: 1" in output
+    cache_root = cache_dir / say.compute_cache_key("Cache Example", say.PASSTHROUGH_CACHE_SEED)
+    metadata = json.loads((cache_root / say.METADATA_FILENAME).read_text())
+    assert metadata["normalized_text"] == "Cache Example"
+    assert metadata["language_code"] == "unknown"
 
 def test_chunk_text_splits_long_text(monkeypatch):
     encoding = say.get_token_encoding()

@@ -26,6 +26,7 @@ PROMPT_FILE = Path(__file__).with_name("speech_prep_prompt.md")
 DEFAULT_VOICE = "alloy"
 TTS_MODEL = "gpt-4o-mini-tts"
 PREPROCESS_MODEL = "gpt-5-mini"
+PASSTHROUGH_CACHE_SEED = "__passthrough__"
 INPUT_FILENAME = "input.txt"
 NORMALIZED_MD_FILENAME = "normalized.md"
 METADATA_FILENAME = "metadata.json"
@@ -227,6 +228,12 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Process without reading or writing cache entries.",
     )
+    parser.add_argument(
+        "-n",
+        "--no-normalize",
+        action="store_true",
+        help="Bypass GPT-5 preprocessing and send raw text directly to speech synthesis.",
+    )
     if not args_iterable:
         parser.print_help()
         raise SystemExit(0)
@@ -375,6 +382,16 @@ def request_normalization(
         normalized_text=normalized_text,
         notes=notes,
         segments=segments,
+    )
+
+
+def passthrough_normalization(raw_text: str) -> NormalizationResult:
+    text = raw_text.strip()
+    return NormalizationResult(
+        language_code="unknown",
+        normalized_text=text,
+        notes=(),
+        segments=(text,),
     )
 
 
@@ -669,7 +686,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         warn_if_cache_large(config.cache_dir, config.cache_warning_threshold)
 
         client = OpenAI(api_key=config.api_key)
-        instructions = load_prompt()
+        skip_normalization = args.no_normalize
+        instructions = None if skip_normalization else load_prompt()
         raw_text = read_input_text(args)
         voice = args.voice or config.default_voice
 
@@ -696,27 +714,41 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             log(f"Cache usage: {'skipped' if args.skip_cache else 'enabled'}")
 
         try:
+            cache_descriptor = "cache enabled" if use_cache else "cache skipped"
             for idx, chunk in enumerate(chunk_texts, start=1):
                 chunk_total = len(chunk_texts)
                 if args.verbose:
-                    log(
-                        f"Normalizing chunk {idx}/{chunk_total} ({'cache enabled' if use_cache else 'cache skipped'})..."
-                    )
+                    if skip_normalization:
+                        log(
+                            f"Preparing chunk {idx}/{chunk_total} (normalization skipped, {cache_descriptor})..."
+                        )
+                    else:
+                        log(
+                            f"Normalizing chunk {idx}/{chunk_total} ({cache_descriptor})..."
+                        )
                 if use_cache:
-                    chunk_key = compute_cache_key(chunk, instructions)
+                    cache_seed = instructions if instructions is not None else PASSTHROUGH_CACHE_SEED
+                    chunk_key = compute_cache_key(chunk, cache_seed)
                     entry = build_cache_entry(config.cache_dir, chunk_key)
                     write_input_snapshot(entry, chunk)
 
-                    normalization, normalization_cached = obtain_normalization(
-                        client=client,
-                        entry=entry,
-                        raw_text=chunk,
-                        instructions=instructions,
-                        temperature=args.temperature,
-                        cache_key=chunk_key,
-                    )
-                    if normalization_cached:
-                        normalization_cache_hits += 1
+                    if skip_normalization:
+                        cached_result = load_normalization_from_cache(entry)
+                        normalization_cached = cached_result is not None
+                        normalization = cached_result or passthrough_normalization(chunk)
+                        if not normalization_cached:
+                            persist_normalization(entry, chunk, chunk_key, normalization)
+                    else:
+                        normalization, normalization_cached = obtain_normalization(
+                            client=client,
+                            entry=entry,
+                            raw_text=chunk,
+                            instructions=instructions,
+                            temperature=args.temperature,
+                            cache_key=chunk_key,
+                        )
+                        if normalization_cached:
+                            normalization_cache_hits += 1
 
                     if args.verbose:
                         log(f"Preparing audio chunk {idx}/{chunk_total} (cache enabled)...")
@@ -729,13 +761,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     if audio_cached:
                         audio_cache_hits += 1
                 else:
-                    normalization = request_normalization(
-                        client=client,
-                        raw_text=chunk,
-                        instructions=instructions,
-                        temperature=args.temperature,
-                    )
-                    normalization_cached = False
+                    if skip_normalization:
+                        normalization = passthrough_normalization(chunk)
+                        normalization_cached = False
+                    else:
+                        normalization = request_normalization(
+                            client=client,
+                            raw_text=chunk,
+                            instructions=instructions,
+                            temperature=args.temperature,
+                        )
+                        normalization_cached = False
                     chunk_dir = Path(temp_dir.name)
                     chunk_dir.mkdir(parents=True, exist_ok=True)
                     audio_cache_path = chunk_dir / f"chunk-{idx:03}.mp3"
@@ -759,11 +795,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     durations_known = False
 
                 if args.verbose:
-                    norm_status = (
-                        "cache hit"
-                        if use_cache and normalization_cached
-                        else ("cache miss" if use_cache else "cache skipped")
-                    )
+                    if skip_normalization:
+                        norm_status = "skipped"
+                    else:
+                        norm_status = (
+                            "cache hit"
+                            if use_cache and normalization_cached
+                            else ("cache miss" if use_cache else "cache skipped")
+                        )
                     audio_status = (
                         "cache hit"
                         if use_cache and audio_cached
@@ -794,10 +833,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             if args.verbose:
                 languages_display = ", ".join(sorted(languages_detected)) if languages_detected else "unknown"
                 log(f"Languages: {languages_display}")
-                log(
-                    f"Chunks processed: {len(chunk_texts)} (normalization cache hits: {normalization_cache_hits}, "
-                    f"audio cache hits: {audio_cache_hits})"
-                )
+                if skip_normalization:
+                    log(
+                        f"Chunks processed: {len(chunk_texts)} (normalization skipped, audio cache hits: {audio_cache_hits})"
+                    )
+                else:
+                    log(
+                        f"Chunks processed: {len(chunk_texts)} (normalization cache hits: {normalization_cache_hits}, "
+                        f"audio cache hits: {audio_cache_hits})"
+                    )
                 size_str = human_readable_size(total_size_bytes)
                 log(f"Total audio size: {size_str}")
                 if durations_known:

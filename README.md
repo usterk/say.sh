@@ -1,6 +1,6 @@
 # say.py – Text-to-Speech Helper
 
-`say.py` preprocesses text with `gpt-5-mini`, turns it into speech via `gpt-4o-mini-tts`, and caches every intermediate result so repeated requests are instant.
+`say.py` preprocesses text with `gpt-5-mini`, turns it into speech via `gpt-4o-mini-tts`, and caches every intermediate result so repeated requests are instant. Use `-n/--no-normalize` to bypass the preprocessing step and speak the raw input text.
 
 ## Setup
 - Create and activate a virtual environment:
@@ -47,12 +47,16 @@
   ```bash
   .venv/bin/python say.py --text "Sample" --voice nova -v
   ```
+- Bypass the preprocessing model entirely when you already have clean text:
+  ```bash
+  .venv/bin/python say.py --text "Short status update" --no-normalize --no-output --play
+  ```
 - Large inputs are automatically split into ~1500-token chunks at sentence boundaries so long files are processed safely.
 - Inspect supported voice presets:
   ```bash
   .venv/bin/python say.py --list-voices
   ```
-- Reuse cached audio automatically whenever the source text and normalization prompt are the same. To remove all cached artifacts:
+- Reuse cached audio automatically whenever the source text and normalization prompt (or passthrough mode) are the same. To remove all cached artifacts:
   ```bash
   .venv/bin/python say.py --clear-cache
   ```
