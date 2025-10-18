@@ -73,3 +73,8 @@
   ```bash
   .venv/bin/pytest
   ```
+- Measure coverage (target ≥75% overall):
+  ```bash
+  .venv/bin/coverage run -m pytest
+  .venv/bin/coverage report
+  ```

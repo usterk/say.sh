@@ -296,6 +296,106 @@ def test_parse_args_skip_cache():
     assert args.skip_cache is True
 
 
+class _MainDummyResponses:
+    def __init__(self):
+        self.calls = 0
+
+    def create(self, **_kwargs):
+        self.calls += 1
+        payload = {
+            "language_code": "pl" if self.calls % 2 else "en",
+            "normalized_text": f"chunk-{self.calls}",
+            "notes": [f"note {self.calls}"],
+            "segments": [f"chunk-{self.calls}"],
+        }
+        return SimpleNamespace(output_text=json.dumps(payload))
+
+
+class _MainDummyStream:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+    def stream_to_file(self, path: Path) -> None:
+        path.write_bytes(b"audio")
+
+
+class _MainDummySpeech:
+    class _Wrapper:
+        def create(self, **_kwargs):
+            return _MainDummyStream()
+
+    def __init__(self):
+        self._wrapper = self._Wrapper()
+
+    @property
+    def with_streaming_response(self):  # pragma: no cover - property simply returns wrapper
+        return self._wrapper
+
+
+class _MainDummyClient:
+    def __init__(self, *_, **__):
+        self.responses = _MainDummyResponses()
+        self.audio = SimpleNamespace(speech=_MainDummySpeech())
+
+
+@pytest.fixture
+def dummy_openai(monkeypatch):
+    monkeypatch.setattr(say, "OpenAI", _MainDummyClient)
+
+
+def _setup_env(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setenv("CACHE_DIR", str(cache_dir))
+    monkeypatch.delenv("CACHE_WARNING_THRESHOLD", raising=False)
+    return cache_dir
+
+
+def _dummy_playback(records):
+    def _player(paths):
+        records.append([str(p) for p in paths])
+
+    return _player
+
+
+def test_main_skip_cache_verbose(dummy_openai, monkeypatch, tmp_path, capsys):
+    _setup_env(monkeypatch, tmp_path)
+    playback_calls = []
+    monkeypatch.setattr(say, "play_audio_sequence", _dummy_playback(playback_calls))
+
+    exit_code = say.main(["--text", "Test verbose", "--skip-cache", "--no-output", "-v"])
+    assert exit_code == 0
+
+    output = capsys.readouterr().out
+    assert "Normalizing chunk 1/1" in output
+    assert "audio generated" in output
+    assert "note 1" in output
+    assert "Total audio duration" in output
+    assert not playback_calls
+
+
+def test_main_cache_then_play(dummy_openai, monkeypatch, tmp_path, capsys):
+    cache_dir = _setup_env(monkeypatch, tmp_path)
+    playback_calls = []
+    monkeypatch.setattr(say, "play_audio_sequence", _dummy_playback(playback_calls))
+
+    merged = tmp_path / "merged.mp3"
+    exit_first = say.main(["--text", "Cache Example", "-o", str(merged)])
+    assert exit_first == 0
+    assert merged.exists()
+    capsys.readouterr()  # clear logs
+
+    exit_second = say.main(["--text", "Cache Example", "-v", "--play", "--no-output"])
+    assert exit_second == 0
+    output = capsys.readouterr().out
+    assert "cache hit" in output
+    assert playback_calls and playback_calls[0]
+    cache_root = cache_dir / say.compute_cache_key("Cache Example", say.load_prompt())
+    assert (cache_root / say.INPUT_FILENAME).exists()
+
 def test_chunk_text_splits_long_text(monkeypatch):
     encoding = say.get_token_encoding()
     sample = "Zdarzyło się raz. To jest bardzo długi tekst, " * 140
